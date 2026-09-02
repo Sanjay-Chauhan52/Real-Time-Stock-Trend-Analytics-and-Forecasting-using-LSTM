@@ -693,13 +693,23 @@
                             document.getElementById("dataFetchStatus").innerText = errorMsg;
                             throw new Error(`Backend fetch failed: ${resp.status} ${resp.statusText}`);
                         }
-                        const stockData = await resp.json(); // Array [{t,o,h,l,c,v}, ...]
+                        const stockResponse = await resp.json();
+                        const stockData = Array.isArray(stockResponse) ? stockResponse : stockResponse.data;
+
                         if (!Array.isArray(stockData) || stockData.length < 2) {
                             document.getElementById("dataFetchStatus").innerText = "Failed (Invalid Data)";
                             throw new Error("Invalid data from backend.");
                         }
-                        document.getElementById("dataFetchStatus").innerText = "Running";
-                        console.log(`Received ${stockData.length} points from backend.`);
+
+                        if (stockResponse.source === "sample (cached)") {
+                            document.getElementById("dataFetchStatus").innerText =
+                                "Request limit reached — Using sample (cached)";
+                            console.warn(stockResponse.api_status || "Using cached sample data.");
+                        } else {
+                            document.getElementById("dataFetchStatus").innerText = "Running";
+                        }
+
+                        console.log(`Received ${stockData.length} points from backend. Source: ${stockResponse.source || "live"}`);
                         const displayData = stockData.slice(-30);
                         const allPrices = stockData.map((d) => d.c);
                         const displayTimes = displayData.map((d) => d.t);
@@ -720,7 +730,9 @@
                             document.getElementById("priceChange").innerText = "--";
                             document.getElementById("priceChange").className = "";
                         }
-                        document.getElementById("lastUpdated").innerText = "Last updated: " + (displayTimes.length > 0 ? displayTimes.at(-1) : "--");
+                        const sourceLabel = stockResponse.source === "sample (cached)" ? " (Sample Cached)" : "";
+                        document.getElementById("lastUpdated").innerText =
+                            "Last updated: " + (displayTimes.length > 0 ? displayTimes.at(-1) : "--") + sourceLabel;
                         console.log("Calculating indicators...");
                         const timestampsFull = stockData.map((d) => new Date(d.t).valueOf()); // Timestamps for all data for charts
                         const sma = calculateSMA(allPrices);

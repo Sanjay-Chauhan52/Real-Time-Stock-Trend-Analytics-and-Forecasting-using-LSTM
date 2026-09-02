@@ -7,6 +7,7 @@ import tensorflow as tf
 import traceback
 import os
 import requests
+import json
 from datetime import datetime
 import sys
 from dotenv import load_dotenv
@@ -27,6 +28,7 @@ else: print("Alpha Vantage API Key loaded.")
 
 # --- Load Model and Scaler ---
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+cache_path = os.path.join(base_dir, "cached_stock_data.json")
 model_path = os.path.join(base_dir, "itc_lstm_model.keras")
 scaler_path = os.path.join(base_dir, "scaler.pkl")
 print(f"Attempting to load model from: {model_path}")
@@ -38,6 +40,41 @@ try:
     if os.path.exists(scaler_path): scaler = joblib.load(scaler_path); print("Scaler loaded.")
     else: print(f"Scaler file not found at {scaler_path}")
 except Exception as e: print(f"FATAL ERROR loading model/scaler: {e}"); traceback.print_exc()
+
+# --- Cached sample dataset fallback ---
+def load_cached_stock_data(symbol):
+    if not os.path.exists(cache_path):
+        raise FileNotFoundError(f"Cached dataset not found at {cache_path}")
+
+    with open(cache_path, "r", encoding="utf-8") as f:
+        cached = json.load(f)
+
+    if cached.get("symbol", "").upper() != symbol.upper():
+        raise ValueError(f"Cached dataset is for {cached.get('symbol')}, not {symbol}")
+
+    ts = cached.get("time_series", {})
+    times = sorted(ts.keys())[-70:]
+    processed_data = []
+
+    for t in times:
+        day_data = ts[t]
+        try:
+            processed_data.append({
+                "t": t,
+                "o": float(day_data["1. open"]),
+                "h": float(day_data["2. high"]),
+                "l": float(day_data["3. low"]),
+                "c": float(day_data["4. close"]),
+                "v": float(day_data["5. volume"]),
+            })
+        except (KeyError, TypeError, ValueError):
+            processed_data.append({"t": t, "o": None, "h": None, "l": None, "c": None, "v": None})
+
+    if len(processed_data) < 61:
+        raise ValueError(f"Cached dataset has only {len(processed_data)} usable points; ~61 are required.")
+
+    return processed_data, cached.get("last_refreshed", "N/A")
+
 
 # --- Routes ---
 @app.route("/")
@@ -98,6 +135,31 @@ def get_stock_data(symbol):
 
             api_error = error_message or information or note or "Unknown Alpha Vantage API issue"
             print("AV API Error/Limit:", api_error)
+
+            # Fall back to the bundled sample dataset when the daily API limit is reached.
+            rate_limit_terms = (
+                "rate limit",
+                "requests per day",
+                "standard api rate limit",
+                "premium plans",
+                "daily rate limit",
+            )
+            if any(term in combined_error for term in rate_limit_terms):
+                try:
+                    cached_data, cached_date = load_cached_stock_data(symbol)
+                    print(f"AV request limit reached. Using cached sample data ({len(cached_data)} points).")
+                    return jsonify({
+                        "data": cached_data,
+                        "source": "sample (cached)",
+                        "api_status": "Request limit reached — using cached sample data.",
+                        "cached_date": cached_date,
+                    })
+                except Exception as cache_error:
+                    print(f"Cached fallback failed: {cache_error}")
+                    return jsonify({
+                        "error": "Alpha Vantage request limit reached and cached sample data could not be loaded."
+                    }), 503
+
             return jsonify({"error": api_error}), 503
 
         ts = data["Time Series (Daily)"]
@@ -129,7 +191,12 @@ def get_stock_data(symbol):
                 })
 
         print(f"AV Fetch OK: {len(processed_data)} points.")
-        return jsonify(processed_data)
+        return jsonify({
+            "data": processed_data,
+            "source": "live",
+            "api_status": "Live Alpha Vantage data",
+            "cached_date": None,
+        })
 
     except requests.exceptions.Timeout:
         print("AV Timeout")
@@ -190,8 +257,9 @@ def predict():
         label = "Bullish" if prob >= 0.5 else "Bearish"
         confidence = round(prob*100 if label=="Bullish" else (1-prob)*100, 1)
 
-
-        accuracy = 75.0 
+        # --- FIX: Send accuracy as a number ---
+        accuracy = 75.0 # Use float, not string "75 %"
+        # --- END FIX ---
 
         response = { "label": label, "confidence": confidence, "accuracy": accuracy };
         print("Prediction response:", response)
@@ -200,7 +268,7 @@ def predict():
 
 @app.route("/status")
 def get_status():
-    try: status_data = { "model_version": "V1.5", "next_retraining": "2027-01-01" }; return jsonify(status_data)
+    try: status_data = { "model_version": "V1.0", "next_retraining": "2026-01-01" }; return jsonify(status_data)
     except Exception as e: print("Status error:", e); traceback.print_exc(); return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
