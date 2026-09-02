@@ -124,7 +124,7 @@ def predict():
 
 @app.route("/status")
 def get_status():
-    try: status_data = { "model_version": "V1.0", "next_retraining": "2026-01-01" }; return jsonify(status_data)
+    try: status_data = { "model_version": "V1.5", "next_retraining": "2027-01-01" }; return jsonify(status_data)
     except Exception as e: print("Status error:", e); traceback.print_exc(); return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
