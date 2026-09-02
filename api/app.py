@@ -48,28 +48,105 @@ def home():
 
 @app.route("/stockdata/<symbol>")
 def get_stock_data(symbol):
-    if not ALPHA_VANTAGE_KEY: return jsonify({"error": "API key not configured."}), 500
-    print(f"Fetching AV data for {symbol}")
-    AV_URL = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=compact&apikey={ALPHA_VANTAGE_KEY}'
-    try:
-        response = requests.get(AV_URL, timeout=10); response.raise_for_status(); data = response.json()
-        if "Error Message" in data or "Information" in data or "Time Series (Daily)" not in data:
-            if "Invalid API call" in data.get("Error Message", "") or "Invalid API key" in data.get("Information", ""): return jsonify({"error": "Invalid Alpha Vantage API Key configured."}), 500
-            else: print("AV API Error/Limit:", data); return jsonify({"error": data.get("Information", data.get("Error Message", "Unknown API issue"))}), 503
-        ts = data["Time Series (Daily)"];
-        times = sorted(ts.keys())[-70:] # Fetch enough history
-        if len(times) < 61: return jsonify({"error": f"Not enough data ({len(times)}) needed ~61"}), 400
+    if not ALPHA_VANTAGE_KEY:
+        return jsonify({"error": "API key not configured."}), 500
 
-        processed_data = [];
+    print(f"Fetching AV data for {symbol}")
+
+    try:
+        # Use query parameters instead of manually building the URL.
+        # This avoids symbol/key encoding problems and works reliably with
+        # symbols such as ITC.BSE.
+        params = {
+            "function": "TIME_SERIES_DAILY",
+            "symbol": symbol.upper(),
+            "outputsize": "compact",
+            "apikey": ALPHA_VANTAGE_KEY,
+        }
+        headers = {
+            "User-Agent": "ITC-Trend-Analysis/1.0",
+            "Accept": "application/json",
+        }
+
+        response = requests.get(
+            "https://www.alphavantage.co/query",
+            params=params,
+            headers=headers,
+            timeout=15,
+        )
+
+        response.raise_for_status()
+
+        try:
+            data = response.json()
+        except ValueError:
+            print("AV returned a non-JSON response:", response.text[:500])
+            return jsonify({"error": "Invalid response from Alpha Vantage."}), 502
+
+        error_message = data.get("Error Message", "")
+        information = data.get("Information", "")
+        note = data.get("Note", "")
+
+        if error_message or information or note or "Time Series (Daily)" not in data:
+            combined_error = f"{error_message} {information} {note}".lower()
+
+            if "invalid api key" in combined_error or "apikey" in combined_error and "invalid" in combined_error:
+                return jsonify({"error": "Invalid Alpha Vantage API Key configured."}), 500
+
+            if "invalid api call" in combined_error or "symbol" in combined_error and "invalid" in combined_error:
+                return jsonify({"error": f"Invalid or unsupported stock symbol: {symbol}"}), 400
+
+            api_error = error_message or information or note or "Unknown Alpha Vantage API issue"
+            print("AV API Error/Limit:", api_error)
+            return jsonify({"error": api_error}), 503
+
+        ts = data["Time Series (Daily)"]
+        times = sorted(ts.keys())[-70:]  # Keep the existing dashboard history size.
+
+        if len(times) < 61:
+            return jsonify({"error": f"Not enough data ({len(times)}) needed ~61"}), 400
+
+        processed_data = []
         for t in times:
             day_data = ts[t]
-            try: processed_data.append({"t": t,"o": float(day_data["1. open"]),"h": float(day_data["2. high"]),"l": float(day_data["3. low"]),"c": float(day_data["4. close"]),"v": float(day_data["5. volume"])})
-            except: processed_data.append({"t": t, "o": None, "h": None, "l": None, "c": None, "v": None})
+            try:
+                processed_data.append({
+                    "t": t,
+                    "o": float(day_data["1. open"]),
+                    "h": float(day_data["2. high"]),
+                    "l": float(day_data["3. low"]),
+                    "c": float(day_data["4. close"]),
+                    "v": float(day_data["5. volume"]),
+                })
+            except (KeyError, TypeError, ValueError):
+                processed_data.append({
+                    "t": t,
+                    "o": None,
+                    "h": None,
+                    "l": None,
+                    "c": None,
+                    "v": None,
+                })
+
         print(f"AV Fetch OK: {len(processed_data)} points.")
         return jsonify(processed_data)
-    except requests.exceptions.Timeout: print("AV Timeout"); return jsonify({"error": "Stock API timed out"}), 504
-    except requests.exceptions.RequestException as e: print(f"AV Network error: {e}"); return jsonify({"error": "Network error fetching stock data"}), 504
-    except Exception as e: print(f"Stock data processing error: {e}"); traceback.print_exc(); return jsonify({"error": "Server error processing stock data"}), 500
+
+    except requests.exceptions.Timeout:
+        print("AV Timeout")
+        return jsonify({"error": "Stock API timed out"}), 504
+
+    except requests.exceptions.ConnectionError as e:
+        print(f"AV Connection error: {e}")
+        return jsonify({"error": "Unable to connect to Alpha Vantage."}), 504
+
+    except requests.exceptions.RequestException as e:
+        print(f"AV Network error: {e}")
+        return jsonify({"error": "Network error fetching stock data"}), 504
+
+    except Exception as e:
+        print(f"Stock data processing error: {e}")
+        traceback.print_exc()
+        return jsonify({"error": "Server error processing stock data"}), 500
 
 def preprocess_prices(prices, timesteps=60): # Keep timesteps=30 here for compatibility
     prices_numeric = [p for p in prices if p is not None and not np.isnan(p)]
@@ -113,9 +190,8 @@ def predict():
         label = "Bullish" if prob >= 0.5 else "Bearish"
         confidence = round(prob*100 if label=="Bullish" else (1-prob)*100, 1)
 
-        # --- FIX: Send accuracy as a number ---
-        accuracy = 75.0 # Use float, not string "75 %"
-        # --- END FIX ---
+
+        accuracy = 75.0 
 
         response = { "label": label, "confidence": confidence, "accuracy": accuracy };
         print("Prediction response:", response)
