@@ -86,6 +86,7 @@ def home():
 
 @app.route("/stockdata/<symbol>")
 def get_stock_data(symbol):
+    global data_source
     if not ALPHA_VANTAGE_KEY:
         return jsonify({"error": "API key not configured."}), 500
 
@@ -148,7 +149,6 @@ def get_stock_data(symbol):
             if any(term in combined_error for term in rate_limit_terms):
                 try:
                     cached_data, cached_date = load_cached_stock_data(symbol)
-                    global data_source
                     data_source = "sample (cached)"
                     print(f"AV request limit reached. Using cached sample data ({len(cached_data)} points).")
                     return jsonify(cached_data)
@@ -188,7 +188,6 @@ def get_stock_data(symbol):
                     "v": None,
                 })
 
-        global data_source
         data_source = "live"
         print(f"AV Fetch OK: {len(processed_data)} points.")
         return jsonify(processed_data)
