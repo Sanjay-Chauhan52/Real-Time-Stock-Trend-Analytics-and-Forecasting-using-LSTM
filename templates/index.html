@@ -523,38 +523,48 @@
                     });
                 }
                 function calculateRSI(prices, period = 14) {
-                    if (!prices || prices.length < period + 1) return new Array(prices?.length || 0).fill(null);
-                    let gains = [];
-                    let losses = [];
+                    if (!prices || prices.length === 0) return [];
+                    if (prices.length < period + 1) return new Array(prices.length).fill(null);
+
+                    const gains = [];
+                    const losses = [];
+
                     for (let i = 1; i < prices.length; i++) {
-                        if (typeof prices[i] !== "number" || typeof prices[i - 1] !== "number" || isNaN(prices[i]) || isNaN(prices[i - 1])) {
+                        const current = prices[i];
+                        const previous = prices[i - 1];
+
+                        if (typeof current !== "number" || typeof previous !== "number" || isNaN(current) || isNaN(previous)) {
                             gains.push(0);
                             losses.push(0);
                             continue;
                         }
-                        const diff = prices[i] - prices[i - 1];
+
+                        const diff = current - previous;
                         gains.push(Math.max(0, diff));
                         losses.push(Math.max(0, -diff));
                     }
-                    let rsi = [null];
-                    let avgGain = NaN,
-                        avgLoss = NaN;
-                    for (let i = 0; i < gains.length; i++) {
-                        if (i === period - 1) {
-                            avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
-                            avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
-                        } else if (i >= period) {
-                            avgGain = (avgGain * (period - 1) + gains[i]) / period;
-                            avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-                        }
-                        if (!isNaN(avgGain) && !isNaN(avgLoss)) {
-                            const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
-                            rsi.push(rs === Infinity ? 100 : 100 - 100 / (1 + rs));
-                        } else if (i >= period - 1) {
-                            rsi.push(null);
-                        }
+
+                    // Keep exactly one RSI value for every input price. The first
+                    // RSI is available at price index `period`; earlier entries
+                    // remain null. This prevents valid RSI values from being
+                    // shifted forward and disappearing from the end of the chart.
+                    const rsi = new Array(prices.length).fill(null);
+                    let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
+                    let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+                    const calculateValue = () => {
+                        const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
+                        return rs === Infinity ? 100 : 100 - 100 / (1 + rs);
+                    };
+
+                    rsi[period] = calculateValue();
+
+                    for (let i = period; i < gains.length; i++) {
+                        avgGain = (avgGain * (period - 1) + gains[i]) / period;
+                        avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+                        rsi[i + 1] = calculateValue();
                     }
-                    while (rsi.length < prices.length) rsi.push(null);
+
                     return rsi;
                 }
                 function calculateBollinger(prices, period = 20, stdDevMultiplier = 2) {
@@ -704,18 +714,14 @@
                         const dataSource = resp.headers.get("X-Data-Source");
                         const apiStatus = resp.headers.get("X-API-Status");
 
-                        if (dataSource === "cached") {
+                        if (dataSource === "sample (cached)") {
                             document.getElementById("dataFetchStatus").innerText =
-                                apiStatus || "Alpha Vantage API key limit reached - using sample (cached).";
-                            console.warn(
-                                `Stock data source: cached. ${apiStatus || "Alpha Vantage API key limit reached - using sample (cached)."}`
-                            );
+                                apiStatus || "Using sample (cached)";
+                            console.warn(apiStatus || "Using cached sample data.");
                         } else if (dataSource === "live") {
-                            document.getElementById("dataFetchStatus").innerText =
-                                apiStatus || "Live Alpha Vantage data";
+                            document.getElementById("dataFetchStatus").innerText = "Running";
                         } else {
-                            document.getElementById("dataFetchStatus").innerText =
-                                apiStatus || "Unknown data source";
+                            document.getElementById("dataFetchStatus").innerText = "Running";
                         }
 
                         console.log(`Received ${stockData.length} points from backend. Source: ${dataSource || "unknown"}.`);
@@ -739,14 +745,7 @@
                             document.getElementById("priceChange").innerText = "--";
                             document.getElementById("priceChange").className = "";
                         }
-                        const sourceLabel =
-                            dataSource === "cached"
-                                ? " (Sample Cached)"
-                                : dataSource === "live"
-                                    ? " (Live API)"
-                                    : "";
-                        document.getElementById("lastUpdated").innerText =
-                            "Last updated: " + (displayTimes.length > 0 ? displayTimes.at(-1) : "--") + sourceLabel;
+                        document.getElementById("lastUpdated").innerText = "Last updated: " + (displayTimes.length > 0 ? displayTimes.at(-1) : "--");
                         console.log("Calculating indicators...");
                         const timestampsFull = stockData.map((d) => new Date(d.t).valueOf()); // Timestamps for all data for charts
                         const sma = calculateSMA(allPrices);
