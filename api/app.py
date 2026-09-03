@@ -34,7 +34,6 @@ scaler_path = os.path.join(base_dir, "scaler.pkl")
 print(f"Attempting to load model from: {model_path}")
 print(f"Attempting to load scaler from: {scaler_path}")
 model = None; scaler = None
-data_source = "unknown"
 try:
     if os.path.exists(model_path): model = tf.keras.models.load_model(model_path); print("Model loaded.")
     else: print(f"Model file not found at {model_path}")
@@ -86,21 +85,54 @@ def home():
 
 @app.route("/stockdata/<symbol>")
 def get_stock_data(symbol):
-    if not ALPHA_VANTAGE_KEY:
-        return jsonify({"error": "API key not configured."}), 500
+    """
+    Try Alpha Vantage first.
+    If the API succeeds with usable Time Series (Daily) data, return live data.
+    Otherwise, transparently fall back to the bundled JSON cache.
+    The response remains the same plain array shape expected by the existing UI.
+    """
+    def cached_fallback(reason, rate_limited=False):
+        try:
+            cached_data, cached_date = load_cached_stock_data(symbol)
 
-    print(f"Fetching AV data for {symbol}")
+            if rate_limited:
+                api_status = "Request limit reached — using sample (cached)."
+            else:
+                api_status = f"{reason} — using sample (cached)."
+
+            print(
+                f"Using cached sample data for {symbol}: "
+                f"{len(cached_data)} points, cached date {cached_date}. Reason: {reason}"
+            )
+
+            response = jsonify(cached_data)
+            response.headers["X-Data-Source"] = "cached"
+            response.headers["X-API-Status"] = api_status
+            response.headers["X-Cache-Date"] = str(cached_date)
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            return response
+
+        except Exception as cache_error:
+            print(f"Cached fallback failed: {cache_error}")
+            traceback.print_exc()
+            return jsonify({
+                "error": f"{reason}. Cached sample data could not be loaded."
+            }), 503
+
+    if not ALPHA_VANTAGE_KEY:
+        return cached_fallback("Alpha Vantage API key not configured")
+
+    print(f"Fetching live Alpha Vantage data for {symbol}")
 
     try:
-        # Use query parameters instead of manually building the URL.
-        # This avoids symbol/key encoding problems and works reliably with
-        # symbols such as ITC.BSE.
         params = {
             "function": "TIME_SERIES_DAILY",
             "symbol": symbol.upper(),
             "outputsize": "compact",
             "apikey": ALPHA_VANTAGE_KEY,
         }
+
         headers = {
             "User-Agent": "ITC-Trend-Analysis/1.0",
             "Accept": "application/json",
@@ -118,57 +150,62 @@ def get_stock_data(symbol):
         try:
             data = response.json()
         except ValueError:
-            print("AV returned a non-JSON response:", response.text[:500])
-            return jsonify({"error": "Invalid response from Alpha Vantage."}), 502
+            print("Alpha Vantage returned a non-JSON response:", response.text[:500])
+            return cached_fallback("Invalid response from Alpha Vantage")
 
-        error_message = data.get("Error Message", "")
-        information = data.get("Information", "")
-        note = data.get("Note", "")
+        error_message = str(data.get("Error Message", "") or "")
+        information = str(data.get("Information", "") or "")
+        note = str(data.get("Note", "") or "")
 
-        if error_message or information or note or "Time Series (Daily)" not in data:
-            combined_error = f"{error_message} {information} {note}".lower()
+        combined_error = f"{error_message} {information} {note}".strip().lower()
+        ts = data.get("Time Series (Daily)")
 
-            if "invalid api key" in combined_error or "apikey" in combined_error and "invalid" in combined_error:
-                return jsonify({"error": "Invalid Alpha Vantage API Key configured."}), 500
-
-            if "invalid api call" in combined_error or "symbol" in combined_error and "invalid" in combined_error:
-                return jsonify({"error": f"Invalid or unsupported stock symbol: {symbol}"}), 400
-
-            api_error = error_message or information or note or "Unknown Alpha Vantage API issue"
-            print("AV API Error/Limit:", api_error)
-
-            # Fall back to the bundled sample dataset when the daily API limit is reached.
+        # Alpha Vantage can return HTTP 200 with an informational/rate-limit
+        # message instead of the requested stock series. Only a real series
+        # with enough points counts as a successful live response.
+        if not isinstance(ts, dict) or len(ts) < 61:
             rate_limit_terms = (
                 "rate limit",
                 "requests per day",
                 "standard api rate limit",
                 "premium plans",
                 "daily rate limit",
+                "call frequency",
+                "25 requests",
+                "too many requests",
             )
+
             if any(term in combined_error for term in rate_limit_terms):
-                try:
-                    cached_data, cached_date = load_cached_stock_data(symbol)
-                    global data_source
-                    data_source = "sample (cached)"
-                    print(f"AV request limit reached. Using cached sample data ({len(cached_data)} points).")
-                    return jsonify(cached_data)
-                except Exception as cache_error:
-                    print(f"Cached fallback failed: {cache_error}")
-                    return jsonify({
-                        "error": "Alpha Vantage request limit reached and cached sample data could not be loaded."
-                    }), 503
+                return cached_fallback(
+                    error_message or information or note or "Alpha Vantage request limit reached",
+                    rate_limited=True,
+                )
 
-            return jsonify({"error": api_error}), 503
+            if (
+                "invalid api key" in combined_error
+                or ("apikey" in combined_error and "invalid" in combined_error)
+            ):
+                return cached_fallback("Invalid Alpha Vantage API Key")
 
-        ts = data["Time Series (Daily)"]
-        times = sorted(ts.keys())[-70:]  # Keep the existing dashboard history size.
+            if (
+                "invalid api call" in combined_error
+                or ("symbol" in combined_error and "invalid" in combined_error)
+            ):
+                return cached_fallback(f"Invalid or unsupported stock symbol: {symbol}")
+
+            reason = error_message or information or note or "No usable Time Series (Daily) returned"
+            return cached_fallback(reason)
+
+        times = sorted(ts.keys())[-70:]  # Preserve the existing dashboard history size.
 
         if len(times) < 61:
-            return jsonify({"error": f"Not enough data ({len(times)}) needed ~61"}), 400
+            return cached_fallback(f"Live API returned only {len(times)} usable points")
 
         processed_data = []
+
         for t in times:
             day_data = ts[t]
+
             try:
                 processed_data.append({
                     "t": t,
@@ -188,27 +225,33 @@ def get_stock_data(symbol):
                     "v": None,
                 })
 
-        global data_source
-        data_source = "live"
-        print(f"AV Fetch OK: {len(processed_data)} points.")
-        return jsonify(processed_data)
+        print(f"Alpha Vantage live fetch OK: {len(processed_data)} points.")
+
+        response = jsonify(processed_data)
+        response.headers["X-Data-Source"] = "live"
+        response.headers["X-API-Status"] = "Live Alpha Vantage data"
+        response.headers["X-Cache-Date"] = ""
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        return response
 
     except requests.exceptions.Timeout:
-        print("AV Timeout")
-        return jsonify({"error": "Stock API timed out"}), 504
+        print("Alpha Vantage request timed out")
+        return cached_fallback("Alpha Vantage request timed out")
 
     except requests.exceptions.ConnectionError as e:
-        print(f"AV Connection error: {e}")
-        return jsonify({"error": "Unable to connect to Alpha Vantage."}), 504
+        print(f"Alpha Vantage connection error: {e}")
+        return cached_fallback("Unable to connect to Alpha Vantage")
 
     except requests.exceptions.RequestException as e:
-        print(f"AV Network error: {e}")
-        return jsonify({"error": "Network error fetching stock data"}), 504
+        print(f"Alpha Vantage network/request error: {e}")
+        return cached_fallback("Network error fetching stock data")
 
     except Exception as e:
         print(f"Stock data processing error: {e}")
         traceback.print_exc()
-        return jsonify({"error": "Server error processing stock data"}), 500
+        return cached_fallback("Server error processing stock data")
+
 
 def preprocess_prices(prices, timesteps=60): # Keep timesteps=30 here for compatibility
     prices_numeric = [p for p in prices if p is not None and not np.isnan(p)]
@@ -226,15 +269,6 @@ def preprocess_prices(prices, timesteps=60): # Keep timesteps=30 here for compat
     except Exception as e: print(f"Scaler error: {e}"); return np.zeros((1, timesteps, 1))
     if X_scaled.shape != (timesteps, 1): print(f"Shape error before final reshape: {X_scaled.shape}"); return np.zeros((1, timesteps, 1))
     return X_scaled.reshape(1, timesteps, 1)
-
-
-@app.route("/datastatus")
-def get_data_status():
-    try:
-        return jsonify({"source": data_source})
-    except Exception as e:
-        print("Data status error:", e); traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/predict", methods=["POST"])
