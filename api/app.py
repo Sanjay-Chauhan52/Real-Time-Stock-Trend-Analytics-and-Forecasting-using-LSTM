@@ -34,7 +34,6 @@ scaler_path = os.path.join(base_dir, "scaler.pkl")
 print(f"Attempting to load model from: {model_path}")
 print(f"Attempting to load scaler from: {scaler_path}")
 model = None; scaler = None
-data_source = "unknown"
 try:
     if os.path.exists(model_path): model = tf.keras.models.load_model(model_path); print("Model loaded.")
     else: print(f"Model file not found at {model_path}")
@@ -86,7 +85,6 @@ def home():
 
 @app.route("/stockdata/<symbol>")
 def get_stock_data(symbol):
-    global data_source
     if not ALPHA_VANTAGE_KEY:
         return jsonify({"error": "API key not configured."}), 500
 
@@ -149,9 +147,12 @@ def get_stock_data(symbol):
             if any(term in combined_error for term in rate_limit_terms):
                 try:
                     cached_data, cached_date = load_cached_stock_data(symbol)
-                    data_source = "sample (cached)"
                     print(f"AV request limit reached. Using cached sample data ({len(cached_data)} points).")
-                    return jsonify(cached_data)
+                    cached_response = jsonify(cached_data)
+                    cached_response.headers["X-Data-Source"] = "sample (cached)"
+                    cached_response.headers["X-API-Status"] = "Request limit reached — using cached sample data."
+                    cached_response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+                    return cached_response
                 except Exception as cache_error:
                     print(f"Cached fallback failed: {cache_error}")
                     return jsonify({
@@ -188,9 +189,12 @@ def get_stock_data(symbol):
                     "v": None,
                 })
 
-        data_source = "live"
         print(f"AV Fetch OK: {len(processed_data)} points.")
-        return jsonify(processed_data)
+        live_response = jsonify(processed_data)
+        live_response.headers["X-Data-Source"] = "live"
+        live_response.headers["X-API-Status"] = "Live Alpha Vantage data"
+        live_response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return live_response
 
     except requests.exceptions.Timeout:
         print("AV Timeout")
@@ -225,15 +229,6 @@ def preprocess_prices(prices, timesteps=60): # Keep timesteps=30 here for compat
     except Exception as e: print(f"Scaler error: {e}"); return np.zeros((1, timesteps, 1))
     if X_scaled.shape != (timesteps, 1): print(f"Shape error before final reshape: {X_scaled.shape}"); return np.zeros((1, timesteps, 1))
     return X_scaled.reshape(1, timesteps, 1)
-
-
-@app.route("/datastatus")
-def get_data_status():
-    try:
-        return jsonify({"source": data_source})
-    except Exception as e:
-        print("Data status error:", e); traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/predict", methods=["POST"])

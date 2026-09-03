@@ -683,7 +683,9 @@
                     console.log(`Fetching stock data from backend for ${SYMBOL}...`);
                     document.getElementById("dataFetchStatus").innerText = "Fetching...";
                     try {
-                        const resp = await fetch(`/stockdata/${SYMBOL}`); // Call backend
+                        const resp = await fetch(`/stockdata/${SYMBOL}?_=${Date.now()}`, {
+                            cache: "no-store"
+                        }); // Call backend
                         if (!resp.ok) {
                             let errorMsg = `Failed (${resp.status})`;
                             try {
@@ -699,20 +701,18 @@
                             throw new Error("Invalid data from backend.");
                         }
 
-                        document.getElementById("dataFetchStatus").innerText = "Running";
-                        try {
-                            const sourceResp = await fetch(`/datastatus`);
-                            if (sourceResp.ok) {
-                                const sourceStatus = await sourceResp.json();
-                                if (sourceStatus.source === "sample (cached)") {
-                                    document.getElementById("dataFetchStatus").innerText =
-                                        "Request limit reached — Using sample (cached)";
-                                }
-                            }
-                        } catch (e) {
-                            console.warn("Data source status fetch error:", e);
+                        const dataSource = resp.headers.get("X-Data-Source");
+                        const apiStatus = resp.headers.get("X-API-Status");
+
+                        if (dataSource === "sample (cached)") {
+                            document.getElementById("dataFetchStatus").innerText =
+                                "Request limit reached — Using sample (cached)";
+                            console.warn(apiStatus || "Using cached sample data.");
+                        } else {
+                            document.getElementById("dataFetchStatus").innerText = "Running";
                         }
-                        console.log(`Received ${stockData.length} points from backend.`);
+
+                        console.log(`Received ${stockData.length} points from backend. Source: ${dataSource || "unknown"}.`);
                         const displayData = stockData.slice(-30);
                         const allPrices = stockData.map((d) => d.c);
                         const displayTimes = displayData.map((d) => d.t);
