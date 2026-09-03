@@ -524,50 +524,43 @@
                 }
                 function calculateRSI(prices, period = 14) {
                     if (!prices || prices.length === 0) return [];
-                    if (prices.length < period + 1) return new Array(prices.length).fill(null);
+                    const rsi = new Array(prices.length).fill(null);
+                    if (prices.length <= period) return rsi;
 
-                    const gains = [];
-                    const losses = [];
+                    let gains = new Array(prices.length - 1).fill(0);
+                    let losses = new Array(prices.length - 1).fill(0);
 
                     for (let i = 1; i < prices.length; i++) {
                         const current = prices[i];
                         const previous = prices[i - 1];
-
                         if (typeof current !== "number" || typeof previous !== "number" || isNaN(current) || isNaN(previous)) {
-                            gains.push(0);
-                            losses.push(0);
+                            gains[i - 1] = 0;
+                            losses[i - 1] = 0;
                             continue;
                         }
-
                         const diff = current - previous;
-                        gains.push(Math.max(0, diff));
-                        losses.push(Math.max(0, -diff));
+                        gains[i - 1] = Math.max(0, diff);
+                        losses[i - 1] = Math.max(0, -diff);
                     }
 
-                    // Keep exactly one RSI value for every input price. The first
-                    // RSI is available at price index `period`; earlier entries
-                    // remain null. This prevents valid RSI values from being
-                    // shifted forward and disappearing from the end of the chart.
-                    const rsi = new Array(prices.length).fill(null);
                     let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
                     let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
+                    rsi[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
 
-                    const calculateValue = () => {
-                        const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
-                        return rs === Infinity ? 100 : 100 - 100 / (1 + rs);
-                    };
-
-                    rsi[period] = calculateValue();
-
-                    for (let i = period; i < gains.length; i++) {
-                        avgGain = (avgGain * (period - 1) + gains[i]) / period;
-                        avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-                        rsi[i + 1] = calculateValue();
+                    for (let i = period + 1; i < prices.length; i++) {
+                        avgGain = (avgGain * (period - 1) + gains[i - 1]) / period;
+                        avgLoss = (avgLoss * (period - 1) + losses[i - 1]) / period;
+                        if (avgLoss === 0) {
+                            rsi[i] = 100;
+                        } else {
+                            const rs = avgGain / avgLoss;
+                            rsi[i] = 100 - 100 / (1 + rs);
+                        }
                     }
 
                     return rsi;
                 }
-                function calculateBollinger(prices, period = 20, stdDevMultiplier = 2) {
+function calculateBollinger(prices, period = 20, stdDevMultiplier = 2) {
                     if (!prices || prices.length < period) return { upper: new Array(prices?.length || 0).fill(null), lower: new Array(prices?.length || 0).fill(null) };
                     const upper = [],
                         lower = [];
@@ -714,7 +707,7 @@
                         const dataSource = resp.headers.get("X-Data-Source");
                         const apiStatus = resp.headers.get("X-API-Status");
 
-                        if (dataSource === "sample (cached)") {
+                        if (dataSource === "cached" || dataSource === "sample (cached)") {
                             document.getElementById("dataFetchStatus").innerText =
                                 apiStatus || "Using sample (cached)";
                             console.warn(apiStatus || "Using cached sample data.");
