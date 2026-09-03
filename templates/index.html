@@ -706,8 +706,10 @@
 
                         if (dataSource === "sample (cached)") {
                             document.getElementById("dataFetchStatus").innerText =
-                                "Request limit reached — Using sample (cached)";
+                                apiStatus || "Using sample (cached)";
                             console.warn(apiStatus || "Using cached sample data.");
+                        } else if (dataSource === "live") {
+                            document.getElementById("dataFetchStatus").innerText = "Running";
                         } else {
                             document.getElementById("dataFetchStatus").innerText = "Running";
                         }
