@@ -87,22 +87,28 @@ def home():
 def get_stock_data(symbol):
     """
     Try Alpha Vantage first.
-    If the API succeeds with usable Time Series (Daily) data, return live data.
-    Otherwise, transparently fall back to the bundled JSON cache.
-    The response remains the same plain array shape expected by the existing UI.
+    If the API returns usable daily data, return live data.
+    If the API is rate-limited, unavailable, times out, or otherwise fails,
+    return the bundled cached sample data.
+
+    The JSON payload remains the same plain array expected by index.html.
+    Response headers identify whether the returned data is live or cached.
     """
+
     def cached_fallback(reason, rate_limited=False):
         try:
             cached_data, cached_date = load_cached_stock_data(symbol)
 
-            if rate_limited:
-                api_status = "Request limit reached — using sample (cached)."
-            else:
-                api_status = f"{reason} — using sample (cached)."
+            api_status = (
+                "Request limit reached — using sample (cached)."
+                if rate_limited
+                else f"{reason} — using sample (cached)."
+            )
 
             print(
                 f"Using cached sample data for {symbol}: "
-                f"{len(cached_data)} points, cached date {cached_date}. Reason: {reason}"
+                f"{len(cached_data)} points, cached date {cached_date}. "
+                f"Reason: {reason}"
             )
 
             response = jsonify(cached_data)
@@ -120,6 +126,7 @@ def get_stock_data(symbol):
                 "error": f"{reason}. Cached sample data could not be loaded."
             }), 503
 
+    # No key: do not break the dashboard; use the bundled cache.
     if not ALPHA_VANTAGE_KEY:
         return cached_fallback("Alpha Vantage API key not configured")
 
@@ -132,19 +139,21 @@ def get_stock_data(symbol):
             "outputsize": "compact",
             "apikey": ALPHA_VANTAGE_KEY,
         }
-
         headers = {
             "User-Agent": "ITC-Trend-Analysis/1.0",
             "Accept": "application/json",
         }
 
+        # Bound both connection and response-read time so the dashboard does not
+        # sit on "Fetching..." indefinitely when Alpha Vantage is unreachable.
         response = requests.get(
             "https://www.alphavantage.co/query",
             params=params,
             headers=headers,
-            timeout=15,
+            timeout=(5, 10),
         )
 
+        print(f"Alpha Vantage HTTP status: {response.status_code}")
         response.raise_for_status()
 
         try:
@@ -156,13 +165,10 @@ def get_stock_data(symbol):
         error_message = str(data.get("Error Message", "") or "")
         information = str(data.get("Information", "") or "")
         note = str(data.get("Note", "") or "")
-
         combined_error = f"{error_message} {information} {note}".strip().lower()
         ts = data.get("Time Series (Daily)")
 
-        # Alpha Vantage can return HTTP 200 with an informational/rate-limit
-        # message instead of the requested stock series. Only a real series
-        # with enough points counts as a successful live response.
+        # Only a real daily series with at least 61 records is considered live.
         if not isinstance(ts, dict) or len(ts) < 61:
             rate_limit_terms = (
                 "rate limit",
@@ -196,16 +202,13 @@ def get_stock_data(symbol):
             reason = error_message or information or note or "No usable Time Series (Daily) returned"
             return cached_fallback(reason)
 
-        times = sorted(ts.keys())[-70:]  # Preserve the existing dashboard history size.
-
+        times = sorted(ts.keys())[-70:]
         if len(times) < 61:
             return cached_fallback(f"Live API returned only {len(times)} usable points")
 
         processed_data = []
-
         for t in times:
             day_data = ts[t]
-
             try:
                 processed_data.append({
                     "t": t,
