@@ -100,7 +100,7 @@ def get_stock_data(symbol):
             cached_data, cached_date = load_cached_stock_data(symbol)
 
             api_status = (
-                "Request limit reached - using sample (cached)."
+                "Alpha Vantage API key limit reached - using sample (cached)."
                 if rate_limited
                 else f"{reason} - using sample (cached)."
             )
@@ -172,6 +172,7 @@ def get_stock_data(symbol):
         if not isinstance(ts, dict) or len(ts) < 61:
             rate_limit_terms = (
                 "rate limit",
+                "rate-limit",
                 "requests per day",
                 "standard api rate limit",
                 "premium plans",
@@ -179,6 +180,8 @@ def get_stock_data(symbol):
                 "call frequency",
                 "25 requests",
                 "too many requests",
+                "limit reached",
+                "request limit",
             )
 
             if any(term in combined_error for term in rate_limit_terms):

@@ -704,14 +704,18 @@
                         const dataSource = resp.headers.get("X-Data-Source");
                         const apiStatus = resp.headers.get("X-API-Status");
 
-                        if (dataSource === "sample (cached)") {
+                        if (dataSource === "cached") {
                             document.getElementById("dataFetchStatus").innerText =
-                                apiStatus || "Using sample (cached)";
-                            console.warn(apiStatus || "Using cached sample data.");
+                                apiStatus || "Alpha Vantage API key limit reached - using sample (cached).";
+                            console.warn(
+                                `Stock data source: cached. ${apiStatus || "Alpha Vantage API key limit reached - using sample (cached)."}`
+                            );
                         } else if (dataSource === "live") {
-                            document.getElementById("dataFetchStatus").innerText = "Running";
+                            document.getElementById("dataFetchStatus").innerText =
+                                apiStatus || "Live Alpha Vantage data";
                         } else {
-                            document.getElementById("dataFetchStatus").innerText = "Running";
+                            document.getElementById("dataFetchStatus").innerText =
+                                apiStatus || "Unknown data source";
                         }
 
                         console.log(`Received ${stockData.length} points from backend. Source: ${dataSource || "unknown"}.`);
@@ -735,7 +739,14 @@
                             document.getElementById("priceChange").innerText = "--";
                             document.getElementById("priceChange").className = "";
                         }
-                        document.getElementById("lastUpdated").innerText = "Last updated: " + (displayTimes.length > 0 ? displayTimes.at(-1) : "--");
+                        const sourceLabel =
+                            dataSource === "cached"
+                                ? " (Sample Cached)"
+                                : dataSource === "live"
+                                    ? " (Live API)"
+                                    : "";
+                        document.getElementById("lastUpdated").innerText =
+                            "Last updated: " + (displayTimes.length > 0 ? displayTimes.at(-1) : "--") + sourceLabel;
                         console.log("Calculating indicators...");
                         const timestampsFull = stockData.map((d) => new Date(d.t).valueOf()); // Timestamps for all data for charts
                         const sma = calculateSMA(allPrices);
