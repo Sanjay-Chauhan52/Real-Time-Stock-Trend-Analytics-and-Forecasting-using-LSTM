@@ -100,9 +100,9 @@ def get_stock_data(symbol):
             cached_data, cached_date = load_cached_stock_data(symbol)
 
             api_status = (
-                "Request limit reached — using sample (cached)."
+                "Request limit reached - using sample (cached)."
                 if rate_limited
-                else f"{reason} — using sample (cached)."
+                else f"{reason} - using sample (cached)."
             )
 
             print(
